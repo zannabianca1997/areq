@@ -37,6 +37,10 @@ impl Version {
     pub fn has_build(&self) -> bool {
         !self.build.is_empty()
     }
+
+    pub fn exact_eq(&self, other: &Self) -> bool {
+        self.eq(other) && self.build == other.build
+    }
 }
 
 impl Display for Version {
