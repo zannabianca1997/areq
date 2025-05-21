@@ -1,6 +1,6 @@
 //! Implementation of semantic versioning
 
-use std::{fmt::Display, num::ParseIntError, str::FromStr};
+use std::{fmt::Display, num::ParseIntError, str::FromStr, u64};
 
 use derive_more::Display;
 use lazy_regex::regex_captures;
@@ -54,13 +54,16 @@ impl PureVersion {
             part: NumericPart::Patch,
         })?;
 
-        let pre = pre
-            .split('.')
-            .map(|p| {
-                p.parse()
-                    .expect("The regex only matches valid prerelase identifiers")
-            })
-            .collect();
+        let pre = if !pre.is_empty() {
+            pre.split('.')
+                .map(|p| {
+                    p.parse()
+                        .expect("The regex only matches valid prerelase identifiers")
+                })
+                .collect()
+        } else {
+            vec![]
+        };
 
         Ok(Self {
             major,
@@ -148,9 +151,11 @@ fn debug_invalid_pure_version(s: &str) -> InvalidPureVersion {
         };
     };
 
-    for pre in pre.split('.') {
-        if let Err(source) = pre.parse::<Prerelease>() {
-            return InvalidPureVersion::InvalidPrerelease { source };
+    if !pre.is_empty() {
+        for pre in pre.split('.') {
+            if let Err(source) = pre.parse::<Prerelease>() {
+                return InvalidPureVersion::InvalidPrerelease { source };
+            }
         }
     }
 
@@ -214,6 +219,44 @@ impl Ord for PureVersion {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
             (false, false) => std::cmp::Ordering::Equal,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use crate::pure::PureVersion;
+
+    static SORTED: &[&'static str] = &[
+        "1.0.0-alpha",
+        "1.0.0-alpha.1",
+        "1.0.0-alpha.beta",
+        "1.0.0-beta",
+        "1.0.0-beta.2",
+        "1.0.0-beta.11",
+        "1.0.0-rc.1",
+        "1.0.0",
+    ];
+
+    #[test]
+    fn can_parse() {
+        for v in SORTED {
+            PureVersion::from_str(v).unwrap();
+        }
+    }
+
+    #[test]
+    fn prereleases_are_sorted() {
+        assert!(SORTED.is_sorted_by_key(|v| PureVersion::from_str(v).unwrap()))
+    }
+
+    #[test]
+    fn roundtrips() {
+        for v in SORTED {
+            let back = PureVersion::from_str(v).unwrap().to_string();
+            assert_eq!(v, &back)
         }
     }
 }

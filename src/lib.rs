@@ -47,9 +47,11 @@ impl FromStr for Version {
                 return Err(InvalidVersion::InvalidPureVersion { source });
             }
 
-            for build in build.split('.') {
-                if let Err(source) = build.parse::<BuildMetadata>() {
-                    return Err(InvalidVersion::InvalidBuildMetadata { source });
+            if !build.is_empty() {
+                for build in build.split('.') {
+                    if let Err(source) = build.parse::<BuildMetadata>() {
+                        return Err(InvalidVersion::InvalidBuildMetadata { source });
+                    }
                 }
             }
 
@@ -60,13 +62,17 @@ impl FromStr for Version {
 
         let pure = PureVersion::from_checked_parts(major, minor, patch, pre)?;
 
-        let build = build
-            .split('.')
-            .map(|p| {
-                p.parse()
-                    .expect("The regex only matches valid build metadata")
-            })
-            .collect();
+        let build = if !build.is_empty() {
+            build
+                .split('.')
+                .map(|p| {
+                    p.parse()
+                        .expect("The regex only matches valid build metadata")
+                })
+                .collect()
+        } else {
+            vec![]
+        };
 
         Ok(Self { pure, build })
     }
