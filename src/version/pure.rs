@@ -1,13 +1,17 @@
 //! Implementation of semantic versioning
 
-use std::{fmt::Display, num::ParseIntError, str::FromStr, u64};
+use std::{cell::LazyCell, fmt::Display, num::ParseIntError, str::FromStr, u64};
 
 use derive_more::Display;
 use lazy_regex::regex_captures;
 use snafu::{ResultExt, Snafu};
 
 pub mod prerelease;
+
 use prerelease::{InvalidPrerelease, Prerelease};
+
+#[cfg(test)]
+mod tests;
 
 /// A semantic version with no metadata
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -19,6 +23,12 @@ pub struct PureVersion {
 }
 
 impl PureVersion {
+    pub const MIN: LazyCell<Self> = LazyCell::new(|| Self {
+        major: 0,
+        minor: 0,
+        patch: 0,
+        pre: vec![Prerelease::MIN],
+    });
     /// The maximum representable version
     pub const MAX: Self = Self {
         major: u64::MAX,
@@ -42,6 +52,18 @@ impl PureVersion {
 
     pub fn is_prerelease(&self) -> bool {
         !self.pre.is_empty()
+    }
+
+    /// Calculate the immediate successive version, such there are no version between this and the returned one
+    ///
+    /// Note that this is not a "version bump", and normally generates nonsensical versions like `1.2.3-0.0.0.0`.
+    /// The objective is simply to represent an exact version as a range [v, v.next()).
+    pub(crate) fn next(mut self) -> Self {
+        if !self.is_prerelease() {
+            self.patch += 1;
+        }
+        self.pre.push(Prerelease::MIN);
+        self
     }
 
     pub(super) fn from_checked_parts(
@@ -227,44 +249,6 @@ impl Ord for PureVersion {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
             (false, false) => std::cmp::Ordering::Equal,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::str::FromStr;
-
-    use crate::pure::PureVersion;
-
-    static SORTED: &[&'static str] = &[
-        "1.0.0-alpha",
-        "1.0.0-alpha.1",
-        "1.0.0-alpha.beta",
-        "1.0.0-beta",
-        "1.0.0-beta.2",
-        "1.0.0-beta.11",
-        "1.0.0-rc.1",
-        "1.0.0",
-    ];
-
-    #[test]
-    fn can_parse() {
-        for v in SORTED {
-            PureVersion::from_str(v).unwrap();
-        }
-    }
-
-    #[test]
-    fn prereleases_are_sorted() {
-        assert!(SORTED.is_sorted_by_key(|v| PureVersion::from_str(v).unwrap()))
-    }
-
-    #[test]
-    fn roundtrips() {
-        for v in SORTED {
-            let back = PureVersion::from_str(v).unwrap().to_string();
-            assert_eq!(v, &back)
         }
     }
 }

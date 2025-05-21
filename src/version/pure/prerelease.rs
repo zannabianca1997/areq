@@ -12,9 +12,17 @@ pub enum Prerelease {
     Alpha(AlphaPrerelease),
 }
 
+impl Prerelease {
+    pub const MIN: Self = Self::Numeric(NumericPrerelease::MIN);
+}
+
 #[derive(DebugDerive, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, DisplayDerive)]
 #[repr(transparent)]
 pub struct NumericPrerelease(BigUint);
+
+impl NumericPrerelease {
+    pub const MIN: Self = Self(BigUint::ZERO);
+}
 
 #[derive(DebugDerive, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, DisplayDerive)]
 #[repr(transparent)]
