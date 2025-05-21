@@ -19,6 +19,14 @@ pub struct PureVersion {
 }
 
 impl PureVersion {
+    /// The maximum representable version
+    pub const MAX: Self = Self {
+        major: u64::MAX,
+        minor: u64::MAX,
+        patch: u64::MAX,
+        pre: vec![],
+    };
+
     pub fn new(major: u64, minor: u64, patch: u64) -> Self {
         Self {
             major,
