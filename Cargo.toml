@@ -1,0 +1,10 @@
+[package]
+name = "areq"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+derive_more = { version = "2.0.1", features = ["as_ref", "debug", "deref", "display", "into", "is_variant"] }
+lazy-regex = "3.4.1"
+num-bigint = "0.4.6"
+snafu = "0.8.5"
