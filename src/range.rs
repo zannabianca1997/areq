@@ -193,6 +193,10 @@ fn display_impl<T>(start: &T, end: &T, f: &mut std::fmt::Formatter<'_>) -> std::
 where
     T: RangeExtremeDisplay,
 {
+    if start == end {
+        return write!(f, "!");
+    }
+
     if start.compare_next_to(&end) {
         return write!(f, "=={}", start);
     }
@@ -273,6 +277,9 @@ where
             let (fun, extreme): (fn(T) -> Range<T>, &str) = if constraint.is_empty() {
                 // Equivalent to (|_| Range::FULL, ""), but faster
                 continue;
+            } else if constraint == "!" {
+                // Equivalent to (|_| Range::EMPTY, ""), but faster
+                return Ok(Range::EMPTY);
             } else if let Some(constraint) = constraint.strip_prefix("<=") {
                 (Range::to_inclusive, constraint)
             } else if let Some(constraint) = constraint.strip_prefix("<") {
