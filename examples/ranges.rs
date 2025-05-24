@@ -1,6 +1,4 @@
-use std::str::FromStr;
-
-use areq::range::Range;
+use areq::range::Ranges;
 use areq::version::pure::PureVersion;
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result};
@@ -14,9 +12,15 @@ fn main() -> Result<()> {
             Ok(line) => {
                 rl.add_history_entry(&line)?;
 
-                match Range::<PureVersion>::from_str(&line) {
-                    Ok(range) => println!("Range: {}", range),
-                    Err(err) => print_error(err),
+                match Ranges::<PureVersion>::from_str(&line) {
+                    Ok(range) => println!("Ranges: {}", range),
+                    Err(errs) => {
+                        println!("Invalid ranges");
+
+                        for err in errs {
+                            println!("  - {}", err);
+                        }
+                    }
                 }
             }
             Err(ReadlineError::Interrupted) => {

@@ -1,4 +1,4 @@
-use super::{RangeExtreme, RangeExtremeDisplay, RangeExtremeFromStr};
+use super::{RangeExtreme, RangeExtremeDisplay};
 
 macro_rules! impl_numeric {
     (
@@ -28,7 +28,6 @@ macro_rules! impl_numeric {
                 }
             }
 
-            impl RangeExtremeFromStr for $t {}
         )*
     };
 }

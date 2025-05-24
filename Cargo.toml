@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+chumsky = { version = "0.10.1", features = ["regex"] }
 derive_more = { version = "2.0.1", features = ["as_ref", "debug", "deref", "deref_mut", "display", "into", "is_variant"] }
+itertools = "0.14.0"
 lazy-regex = "3.4.1"
 num-bigint = "0.4.6"
 snafu = "0.8.5"

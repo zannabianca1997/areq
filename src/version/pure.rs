@@ -2,11 +2,12 @@
 
 use std::{borrow::Cow, fmt::Display, num::ParseIntError, str::FromStr};
 
+use chumsky::{Parser, prelude::*, text::digits};
 use derive_more::Display;
 use lazy_regex::regex_captures;
 use snafu::{ResultExt, Snafu};
 
-use crate::range;
+use crate::range::{self, ParserExtra};
 
 pub mod prerelease;
 
@@ -133,18 +134,6 @@ impl PureVersion {
         patch: &str,
         pre: &str,
     ) -> Result<PureVersion, InvalidPureVersion> {
-        let major = major.parse().context(NumericPartTooLongSnafu {
-            part: NumericPart::Major,
-        })?;
-
-        let minor = minor.parse().context(NumericPartTooLongSnafu {
-            part: NumericPart::Minor,
-        })?;
-
-        let patch = patch.parse().context(NumericPartTooLongSnafu {
-            part: NumericPart::Patch,
-        })?;
-
         let pre = if !pre.is_empty() {
             Cow::Owned(
                 pre.split('.')
@@ -157,6 +146,26 @@ impl PureVersion {
         } else {
             Cow::Borrowed(&[] as &[_])
         };
+
+        Self::from_checked_parts_splitted(major, minor, patch, pre)
+    }
+    pub(super) fn from_checked_parts_splitted(
+        major: &str,
+        minor: &str,
+        patch: &str,
+        pre: Cow<'static, [Prerelease]>,
+    ) -> Result<PureVersion, InvalidPureVersion> {
+        let major = major.parse().context(NumericPartTooLongSnafu {
+            part: NumericPart::Major,
+        })?;
+
+        let minor = minor.parse().context(NumericPartTooLongSnafu {
+            part: NumericPart::Minor,
+        })?;
+
+        let patch = patch.parse().context(NumericPartTooLongSnafu {
+            part: NumericPart::Patch,
+        })?;
 
         if patch == UInt::MAX && pre.is_empty() {
             return Err(InvalidPureVersion::PatchCannotBeUIntMax);
@@ -357,4 +366,35 @@ impl range::RangeExtremeDisplay for PureVersion {
     }
 }
 
-impl range::RangeExtremeFromStr for PureVersion {}
+impl range::RangeExtremeParseable for PureVersion {
+    fn parser<'a>() -> impl chumsky::Parser<'a, &'a str, Self, ParserExtra<'a>> + Clone {
+        let numeric = digits(10).to_slice();
+
+        numeric
+            .clone()
+            .labelled("major")
+            .then_ignore(just('.'))
+            .then(numeric.clone().labelled("minor"))
+            .then_ignore(just('.'))
+            .then(numeric.labelled("patch"))
+            .then(
+                just('-')
+                    .ignore_then(
+                        Prerelease::parser()
+                            .separated_by(just('.'))
+                            .at_least(1)
+                            .collect::<Vec<_>>(),
+                    )
+                    .or_not(),
+            )
+            .try_map(|(((major, minor), patch), pre), span| {
+                PureVersion::from_checked_parts_splitted(
+                    major,
+                    minor,
+                    patch,
+                    pre.map(Cow::Owned).unwrap_or(Cow::Borrowed(&[])),
+                )
+                .map_err(|err| Rich::custom(span, err))
+            })
+    }
+}

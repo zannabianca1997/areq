@@ -1,9 +1,18 @@
 use std::{fmt::Debug, str::FromStr};
 
+use chumsky::{
+    Parser,
+    label::LabelError,
+    prelude::*,
+    text::{self, TextExpected, digits},
+    util::MaybeRef,
+};
 use derive_more::{Debug as DebugDerive, Display as DisplayDerive, IsVariant};
 use lazy_regex::regex_switch;
 use num_bigint::BigUint;
 use snafu::Snafu;
+
+use crate::range::ParserExtra;
 
 /// An identifier for a pre-release
 #[derive(DebugDerive, Clone, PartialEq, Eq, Hash, IsVariant, PartialOrd, Ord, DisplayDerive)]
@@ -14,6 +23,48 @@ pub enum Prerelease {
 
 impl Prerelease {
     pub const MIN: Self = Self::Numeric(NumericPrerelease::MIN);
+
+    pub(crate) fn parser<'a>() -> impl chumsky::Parser<'a, &'a str, Self, ParserExtra<'a>> + Clone {
+        text::int(10)
+            .to_slice()
+            .map(|s: &str| Prerelease::Numeric(NumericPrerelease(s.parse().unwrap())))
+            .or(digits(10)
+                .or_not()
+                .ignored()
+                .then_ignore(any().try_map(|c: char, span| {
+                    if c.is_ascii_alphabetic() || c == '-' {
+                        Ok(c)
+                    } else {
+                        Err(
+                            LabelError::<'a, &'a str, TextExpected<'a, &'a str>>::expected_found(
+                                [TextExpected::IdentifierPart],
+                                Some(MaybeRef::Val(c)),
+                                span,
+                            ),
+                        )
+                    }
+                }))
+                .then_ignore(
+                    any()
+                        .try_map(|c: char, span| {
+                            if c.is_ascii_alphanumeric() || c == '-' {
+                                Ok(c)
+                            } else {
+                                Err(
+                            LabelError::<'a, &'a str, TextExpected<'a, &'a str>>::expected_found(
+                                [TextExpected::IdentifierPart],
+                                Some(MaybeRef::Val(c)),
+                                span,
+                            ),
+                        )
+                            }
+                        })
+                        .ignored()
+                        .repeated(),
+                )
+                .to_slice()
+                .map(|s: &str| Prerelease::Alpha(AlphaPrerelease(s.to_owned()))))
+    }
 }
 
 #[derive(DebugDerive, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, DisplayDerive)]

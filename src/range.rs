@@ -1,10 +1,16 @@
 use std::{
-    error::Error,
+    cmp::Reverse,
+    convert::identity,
     fmt::{Debug, Display},
-    str::FromStr,
 };
 
+use chumsky::{Parser, error::Rich};
+use itertools::Itertools;
+
 mod numeric_impls;
+mod parse;
+
+pub use parse::Extra as ParserExtra;
 
 #[cfg(test)]
 mod tests;
@@ -48,32 +54,31 @@ pub trait RangeExtremeDisplay: RangeExtreme + Display {
 
 /// Marker trait for ranges extremes that can be parser
 ///
-/// Implementors must ensure that valid string representations must not contains
-/// the character `,`, and must not start with `=`.
-pub trait RangeExtremeFromStr: RangeExtreme + FromStr {}
+/// Implementors must ensure that valid string representations must not
+///  - contain `||` or `&&`
+///  - start with `==`, `>`, `<`, `>=`, `<=`, `!` or `(`
+///  - end with `)`
+///  - have surrounding whitespace
+///  - be `*`.
+pub trait RangeExtremeParseable: RangeExtreme {
+    fn parser<'a>() -> impl Parser<'a, &'a str, Self, ParserExtra<'a>> + Clone;
+}
 
 /// A range of versions
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Range<T> {
-    start: T,
-    end: T,
+pub struct Ranges<T> {
+    /// Sorted list of range extremes, in descending order
+    ///
+    /// If the number of elements is odd, the last range is considered half-open
+    extremes: Vec<T>,
 }
 
-impl<T> Range<T>
+impl<T> Ranges<T>
 where
     T: RangeExtreme,
 {
     /// Empty range
-    pub const EMPTY: Self = Self {
-        start: T::MAX,
-        end: T::MAX,
-    };
-
-    /// Full range
-    pub const FULL: Self = Self {
-        start: T::MIN,
-        end: T::MAX,
-    };
+    pub const EMPTY: Self = Self { extremes: vec![] };
 
     /// Create a new range from `start` to `end`, including `start` and excluding `end`
     pub fn between(start: T, end: T) -> Self {
@@ -81,7 +86,9 @@ where
         if start >= end {
             return Self::EMPTY;
         }
-        Self { start, end }
+        Self {
+            extremes: vec![end, start],
+        }
     }
 
     /// Create a new range from `start` to `end`, excluding `start` and excluding `end`
@@ -101,7 +108,9 @@ where
 
     /// Create a new range from `start` to infinity, including `start`
     pub fn from(start: T) -> Self {
-        Self::between(start, T::MAX)
+        Self {
+            extremes: vec![start],
+        }
     }
 
     /// Create a new range from `start` to infinity, excluding `start`
@@ -124,9 +133,14 @@ where
         Self::between_include_end(value.clone(), value)
     }
 
+    /// Create a range containing all values except one.
+    pub fn except(value: T) -> Self {
+        Self::single(value).not()
+    }
+
     /// Return whether the range contains exactly one element.
     pub fn is_single(&self) -> bool {
-        self.start.compare_next_to(&self.end)
+        self.extremes.len() == 2 && self.extremes[1].compare_next_to(&self.extremes[0])
     }
 
     /// Return whether the range is empty.
@@ -134,181 +148,153 @@ where
         self == &Self::EMPTY
     }
 
+    /// Return a range containing all values.
+    pub fn full() -> Self {
+        Self::from(T::MIN)
+    }
+
+    /// Return whether the range contains all possible values.
+    pub fn is_full(&self) -> bool {
+        self.extremes.len() == 1 && self.extremes[0] == T::MIN
+    }
+
     /// Return whether `value` is inside the range.
     pub fn contains(&self, value: &T) -> bool {
-        &self.start <= value && value < &self.end
+        (self.extremes.len()
+            - self
+                .extremes
+                .binary_search_by_key(&Reverse(value), Reverse)
+                .unwrap_or_else(identity))
+            % 2
+            == 1
     }
 
-    /// Return whether the range completely contains another range.
+    /// Return an iterator over the ranges in the range set
     ///
-    /// True if and only if all values belonging to other also belong to self
-    pub fn contains_range(&self, other: &Self) -> bool {
-        if other.is_empty() {
-            return true;
-        }
-        self.start <= other.start && other.end <= self.end
+    /// If the end is missing, the range is half-infinite
+    fn ranges(&self) -> impl IntoIterator<Item = (&T, Option<&T>)> {
+        let full_ranges = self.extremes.as_slice().rchunks_exact(2);
+        let remainder = full_ranges.remainder().first();
+        full_ranges
+            .map(|chunk| (&chunk[1], Some(&chunk[0])))
+            .chain(remainder.map(|chunk| (chunk, None)))
     }
 
-    /// Return whether two ranges intersect
-    ///
-    /// True if and only if there exists a value such that it belongs to both ranges
-    pub fn intersect(&self, other: &Self) -> bool {
-        if self.is_empty() || other.is_empty() {
-            return false;
+    /// Return the negation of the range set
+    pub fn not(mut self) -> Self {
+        if self.extremes.last() == Some(&T::MIN) {
+            self.extremes.pop();
+        } else {
+            self.extremes.push(T::MIN);
         }
-        self.start < other.end && other.start < self.end
+        self
     }
 
-    /// Return the intersection of two ranges
-    pub fn intersection(&self, other: &Self) -> Self {
-        if !self.intersect(other) {
-            return Self::EMPTY;
+    /// Return the union of two ranges set
+    pub fn or(mut self, other: &Self) -> Self {
+        for (start, end) in other.ranges() {
+            let add_start = (!self.contains(start)).then_some(start);
+            let add_end = end.and_then(|end| (!self.contains(end)).then_some(end));
+
+            let i_start = self
+                .extremes
+                .binary_search_by_key(&Reverse(start), Reverse)
+                .unwrap_or_else(identity);
+            let i_end = end.map_or(0, |end| {
+                self.extremes
+                    .binary_search_by_key(&Reverse(end), Reverse)
+                    .unwrap_or_else(identity)
+            });
+
+            self.extremes.splice(
+                i_end..i_start,
+                [add_end, add_start].into_iter().flatten().cloned(),
+            );
         }
-        Self::between(
-            std::cmp::max(&self.start, &other.start).clone(),
-            std::cmp::min(&self.end, &other.end).clone(),
-        )
+        self
+    }
+
+    /// Return the intersection of two ranges set
+    pub fn xor<'a>(ranges: impl IntoIterator<Item = &'a Self>) -> Self
+    where
+        T: 'a,
+    {
+        // Each extreme is a point where the predicate passes from true to false.
+        // Xor changes value each time it changes, so we can simply merge all the points
+        // and deduplicate them
+        Self {
+            extremes: ranges
+                .into_iter()
+                .map(|r| r.extremes.iter().map(Reverse))
+                .kmerge()
+                .map(|Reverse(extreme)| extreme)
+                .dedup_with_count()
+                .filter_map(|(count, item)| (count % 2 == 1).then_some(item))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Return the intersection of two ranges set
+    pub fn and(self, other: &Self) -> Self {
+        // Using the identity `a && b = a ^ b ^ (a || b)`
+        let or = self.clone().or(other);
+        Self::xor([&self, &other, &or])
+    }
+
+    pub fn from_str<'a>(s: &'a str) -> Result<Self, Vec<Rich<'a, char>>>
+    where
+        T: RangeExtremeParseable + 'a,
+    {
+        parse::parser().parse(s).into_result()
     }
 }
 
-impl<T> Display for Range<T>
+impl<T> Display for Ranges<T>
 where
     T: RangeExtremeDisplay,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        display_impl(&self.start, &self.end, f)
-    }
-}
-
-/// Display a range in a human-readable format.
-///
-/// The range is displayed as either:
-/// - `==<value>` if the range contains only one element
-/// - `>=[start],<[end]` if the range contains all elements from `start` to `end` (inclusive or exclusive)
-/// - `>=[start]` if the range contains all elements strictly greater than `start`
-/// - `<[end]` if the range contains all elements strictly less than `end`
-///
-/// Inclusive variant of end and exclusive variant of start are displayied similarly
-fn display_impl<T>(start: &T, end: &T, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
-where
-    T: RangeExtremeDisplay,
-{
-    if start == end {
-        return write!(f, "!");
-    }
-
-    if start.compare_next_to(&end) {
-        return write!(f, "=={}", start);
-    }
-
-    let mut need_comma = false;
-
-    if start != &T::MIN {
-        need_comma = true;
-
-        if start.has_prev() {
-            write!(f, ">")?;
-            start.display_prev(f)?;
-        } else {
-            write!(f, ">={}", start)?;
-        }
-    }
-
-    if end != &T::MAX {
-        if need_comma {
-            write!(f, ",")?;
+        if self.is_empty() {
+            return write!(f, "-");
         }
 
-        if end.has_prev() {
-            write!(f, "<=")?;
-            end.display_prev(f)?;
-        } else {
-            write!(f, "<{}", end)?;
+        if self.is_full() {
+            return write!(f, "*");
         }
-    }
 
-    Ok(())
-}
-
-#[derive(Debug, Clone)]
-pub enum RangeParseError<TErr> {
-    ParseExtreme { source: TErr },
-    UnrecognizedConstraintOperator { constraint: String },
-}
-
-impl<T> std::fmt::Display for RangeParseError<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RangeParseError::ParseExtreme { .. } => write!(f, "Cannot parse range extreme"),
-            RangeParseError::UnrecognizedConstraintOperator { constraint } => {
-                write!(
-                    f,
-                    "Unrecognized constraint operator (expected one of `<=`, `<`, `>=`, `>`, `==`): {constraint}"
-                )
+        for (i, (start, end)) in self.ranges().into_iter().enumerate() {
+            if i > 0 {
+                write!(f, " || ")?;
             }
-        }
-    }
-}
 
-impl<TErr> Error for RangeParseError<TErr>
-where
-    TErr: Error + 'static,
-{
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            RangeParseError::ParseExtreme { source } => Some(source),
-            RangeParseError::UnrecognizedConstraintOperator { .. } => None,
-        }
-    }
-}
-
-impl<T> FromStr for Range<T>
-where
-    T: RangeExtremeFromStr,
-{
-    type Err = RangeParseError<<T as FromStr>::Err>;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut range = Range::FULL;
-
-        for constraint in s.split(',') {
-            let constraint = constraint.trim();
-
-            let (fun, extreme): (fn(T) -> Range<T>, &str) = if constraint.is_empty() {
-                // Equivalent to (|_| Range::FULL, ""), but faster
+            if start.compare_next_to(end.unwrap_or(&T::MAX)) {
+                write!(f, "=={}", start)?;
                 continue;
-            } else if constraint == "!" {
-                // Equivalent to (|_| Range::EMPTY, ""), but faster
-                return Ok(Range::EMPTY);
-            } else if let Some(constraint) = constraint.strip_prefix("<=") {
-                (Range::to_inclusive, constraint)
-            } else if let Some(constraint) = constraint.strip_prefix("<") {
-                (Range::to, constraint)
-            } else if let Some(constraint) = constraint.strip_prefix(">=") {
-                (Range::from, constraint)
-            } else if let Some(constraint) = constraint.strip_prefix(">") {
-                (Range::from_exclusive, constraint)
-            } else if let Some(constraint) = constraint.strip_prefix("==") {
-                (Range::single, constraint)
-            } else {
-                return Err(RangeParseError::UnrecognizedConstraintOperator {
-                    constraint: constraint.to_string(),
-                });
-            };
+            }
 
-            let extreme = extreme
-                .trim_start()
-                .parse()
-                .map_err(|source| RangeParseError::ParseExtreme { source })?;
+            if start != &T::MIN {
+                if start.has_prev() {
+                    write!(f, ">")?;
+                    start.display_prev(f)?;
+                } else {
+                    write!(f, ">={}", start)?;
+                }
 
-            let constraint = fun(extreme);
+                if end.is_some() {
+                    write!(f, " && ")?;
+                }
+            }
 
-            range = range.intersection(&constraint);
-            if range.is_empty() {
-                break;
+            if let Some(end) = end {
+                if end.has_prev() {
+                    write!(f, "<=")?;
+                    end.display_prev(f)?;
+                } else {
+                    write!(f, "<{}", end)?;
+                }
             }
         }
-
-        Ok(range)
+        Ok(())
     }
 }
