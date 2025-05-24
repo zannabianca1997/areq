@@ -1,10 +1,12 @@
 //! Implementation of semantic versioning
 
-use std::{cell::LazyCell, fmt::Display, num::ParseIntError, str::FromStr, u64};
+use std::{borrow::Cow, fmt::Display, num::ParseIntError, str::FromStr};
 
 use derive_more::Display;
 use lazy_regex::regex_captures;
 use snafu::{ResultExt, Snafu};
+
+use crate::range;
 
 pub mod prerelease;
 
@@ -13,36 +15,41 @@ use prerelease::{InvalidPrerelease, Prerelease};
 #[cfg(test)]
 mod tests;
 
+pub type UInt = u64;
+
 /// A semantic version with no metadata
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PureVersion {
-    pub major: u64,
-    pub minor: u64,
-    pub patch: u64,
-    pub pre: Vec<Prerelease>,
+    pub major: UInt,
+    pub minor: UInt,
+    pub patch: UInt,
+    pub pre: Cow<'static, [Prerelease]>,
 }
 
 impl PureVersion {
-    pub const MIN: LazyCell<Self> = LazyCell::new(|| Self {
+    const MIN: Self = Self {
         major: 0,
         minor: 0,
         patch: 0,
-        pre: vec![Prerelease::MIN],
-    });
+        pre: Cow::Borrowed({
+            static V: [Prerelease; 1] = [Prerelease::MIN];
+            &V
+        }),
+    };
     /// The maximum representable version
-    pub const MAX: Self = Self {
-        major: u64::MAX,
-        minor: u64::MAX,
-        patch: u64::MAX,
-        pre: vec![],
+    const MAX: Self = Self {
+        major: UInt::MAX,
+        minor: UInt::MAX,
+        patch: UInt::MAX,
+        pre: Cow::Borrowed(&[]),
     };
 
-    pub fn new(major: u64, minor: u64, patch: u64) -> Self {
+    pub fn new(major: UInt, minor: UInt, patch: UInt) -> Self {
         Self {
             major,
             minor,
             patch,
-            pre: vec![],
+            pre: Cow::Borrowed(&[]),
         }
     }
 
@@ -54,16 +61,70 @@ impl PureVersion {
         !self.pre.is_empty()
     }
 
-    /// Calculate the immediate successive version, such there are no version between this and the returned one
+    /// Calculate the immediate successive version, such there are no version between this and that
     ///
     /// Note that this is not a "version bump", and normally generates nonsensical versions like `1.2.3-0.0.0.0`.
     /// The objective is simply to represent an exact version as a range [v, v.next()).
-    pub(crate) fn next(mut self) -> Self {
+    fn next(mut self) -> Self {
         if !self.is_prerelease() {
             self.patch += 1;
         }
-        self.pre.push(Prerelease::MIN);
+        self.pre.to_mut().push(Prerelease::MIN);
         self
+    }
+
+    /// Return if next is the next version
+    fn compare_next_to(&self, other: &PureVersion) -> bool {
+        other.has_prev()
+            && self.major == other.major
+            && self.minor == other.minor
+            && if self.is_prerelease() {
+                self.patch == other.patch && self.pre == other.pre.split_last().unwrap().1
+            } else {
+                self.patch + 1 == other.patch && other.pre.len() == 1
+            }
+    }
+
+    /// Check if this version has a previous version, such there are no version between that and this
+    fn has_prev(&self) -> bool {
+        self.pre.last() == Some(&Prerelease::MIN)
+            && if self.pre.len() == 1 {
+                self.patch != UInt::MIN
+            } else {
+                true
+            }
+    }
+
+    /*
+        /// Calculate the immediate previous version if it exist, such there are no version between that and this
+        ///
+        /// If this version does not have a previous, return itself into the [`Err`] variant
+        fn prev(mut self) -> Result<Self, Self> {
+            if !self.has_prev() {
+                return Err(self);
+            }
+            self.pre.to_mut().pop();
+            if !self.is_prerelease() {
+                self.patch -= 1
+            }
+            return Ok(self);
+        }
+    */
+
+    /// Display the previous version without cloning
+    ///
+    /// Fails if [`has_pre`] is false
+    fn display_prev(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if !self.has_prev() {
+            return std::fmt::Result::Err(std::fmt::Error);
+        }
+        display_impl(
+            self.major,
+            self.minor,
+            self.patch - if self.pre.len() == 1 { 1 } else { 0 },
+            self.pre.split_last().unwrap().1,
+            f,
+        )
     }
 
     pub(super) fn from_checked_parts(
@@ -85,15 +146,21 @@ impl PureVersion {
         })?;
 
         let pre = if !pre.is_empty() {
-            pre.split('.')
-                .map(|p| {
-                    p.parse()
-                        .expect("The regex only matches valid prerelase identifiers")
-                })
-                .collect()
+            Cow::Owned(
+                pre.split('.')
+                    .map(|p| {
+                        p.parse()
+                            .expect("The regex only matches valid prerelase identifiers")
+                    })
+                    .collect(),
+            )
         } else {
-            vec![]
+            Cow::Borrowed(&[] as &[_])
         };
+
+        if patch == UInt::MAX && pre.is_empty() {
+            return Err(InvalidPureVersion::PatchCannotBeUIntMax);
+        }
 
         Ok(Self {
             major,
@@ -106,17 +173,26 @@ impl PureVersion {
 
 impl Display for PureVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
-
-        if !self.pre.is_empty() {
-            write!(f, "-{}", self.pre[0])?;
-            for pre in &self.pre[1..] {
-                write!(f, ".{}", pre)?;
-            }
-        }
-
-        Ok(())
+        display_impl(self.major, self.minor, self.patch, &*self.pre, f)
     }
+}
+fn display_impl(
+    major: UInt,
+    minor: UInt,
+    patch: UInt,
+    pre: &[Prerelease],
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    write!(f, "{}.{}.{}", major, minor, patch)?;
+
+    if !pre.is_empty() {
+        write!(f, "-{}", pre[0])?;
+        for pre in &pre[1..] {
+            write!(f, ".{}", pre)?;
+        }
+    }
+
+    Ok(())
 }
 
 impl FromStr for PureVersion {
@@ -159,21 +235,21 @@ fn debug_invalid_pure_version(s: &str) -> InvalidPureVersion {
         };
     }
 
-    if let Err(source) = major.parse::<u64>() {
+    if let Err(source) = major.parse::<UInt>() {
         return InvalidPureVersion::InvalidNumericPart {
             part: NumericPart::Major,
             value: major.to_string(),
             source,
         };
     };
-    if let Err(source) = minor.parse::<u64>() {
+    if let Err(source) = minor.parse::<UInt>() {
         return InvalidPureVersion::InvalidNumericPart {
             part: NumericPart::Minor,
             value: minor.to_string(),
             source,
         };
     };
-    if let Err(source) = patch.parse::<u64>() {
+    if let Err(source) = patch.parse::<UInt>() {
         return InvalidPureVersion::InvalidNumericPart {
             part: NumericPart::Patch,
             value: patch.to_string(),
@@ -223,6 +299,10 @@ pub enum InvalidPureVersion {
     },
     #[snafu(display("Invalid prerelease"))]
     InvalidPrerelease { source: InvalidPrerelease },
+    #[snafu(display(
+        "The patch version cannot be the maximum 64 bit unsigned int unless prerelease"
+    ))]
+    PatchCannotBeUIntMax,
 }
 
 impl PartialOrd for PureVersion {
@@ -252,3 +332,29 @@ impl Ord for PureVersion {
         }
     }
 }
+
+impl range::RangeExtreme for PureVersion {
+    const MIN: Self = PureVersion::MIN;
+
+    const MAX: Self = PureVersion::MAX;
+
+    fn next(self) -> Self {
+        PureVersion::next(self)
+    }
+
+    fn compare_next_to(&self, other: &Self) -> bool {
+        PureVersion::compare_next_to(&self, other)
+    }
+}
+
+impl range::RangeExtremeDisplay for PureVersion {
+    fn has_prev(&self) -> bool {
+        PureVersion::has_prev(&self)
+    }
+
+    fn display_prev(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        PureVersion::display_prev(&self, f)
+    }
+}
+
+impl range::RangeExtremeFromStr for PureVersion {}

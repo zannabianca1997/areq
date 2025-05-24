@@ -32,3 +32,16 @@ fn roundtrips() {
         assert_eq!(v, &back)
     }
 }
+
+#[test]
+fn next_and_prev() {
+    for version in SORTED {
+        let version = PureVersion::from_str(version).unwrap();
+
+        let next = version.clone().next();
+
+        assert!(version.compare_next_to(&next));
+        assert!(next.has_prev());
+        // assert_eq!(version, next.prev().unwrap());
+    }
+}
