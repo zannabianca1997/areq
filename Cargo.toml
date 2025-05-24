@@ -8,3 +8,6 @@ derive_more = { version = "2.0.1", features = ["as_ref", "debug", "deref", "dere
 lazy-regex = "3.4.1"
 num-bigint = "0.4.6"
 snafu = "0.8.5"
+
+[dev-dependencies]
+rustyline = "15.0.0"
